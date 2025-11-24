@@ -1,0 +1,647 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <title>나를 입는 법: 3D 패션 분석 구체</title>
+    <!-- Tailwind CSS for modern styling and modal -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Inter Font -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap" rel="stylesheet">
+    <!-- Three.js CDN for 3D graphics -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <!-- OrbitControls -->
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <style>
+        /* Custom styles for the body and canvas */
+        body {
+            font-family: 'Inter', sans-serif;
+            margin: 0;
+            overflow: hidden; /* Hide scrollbars */
+            background-color: #0d1117; /* Dark background */
+            color: #e5e7eb;
+        }
+        canvas { display:block; }
+        .color-dot {
+            width: 18px; /* 키움 (원래 10px) */
+            height: 18px;
+            border-radius: 50%;
+            display: inline-block;
+            margin-right: 12px;
+            box-shadow: 0 0 8px rgba(255,255,255,0.5);
+        }
+        /* Legend: 크기 2배로 키움 (요청사항) */
+        #legend-bar {
+            min-width: 600px;              /* 기존 300px -> 600px (2배) */
+            padding: 2.5rem;               /* 기존 1.25rem -> 2.5rem (2배) */
+            font-size: 1.25rem;            /* 텍스트도 키움 (원래 1rem) */
+        }
+        /* 범례 내부 항목 텍스트 크기 조정 */
+        #legend-bar .font-medium {
+            font-size: 1.125rem;
+        }
+        /* Modal transition tweaks (unchanged functionality) */
+    </style>
+</head>
+<body class="flex flex-col items-center justify-center h-screen">
+
+    <!-- Information Bar (Top Left) -->
+    <div id="info-bar" class="absolute top-4 left-4 z-10 p-4 bg-white/10 backdrop-blur-sm rounded-xl shadow-2xl text-sm md:text-base transition-all duration-300 max-w-xs text-left">
+        <h1 class="font-bold text-xl mb-1 text-yellow-300">패션과 라이프: 나를 입는 법.</h1>
+        <p class="text-gray-300 text-sm">마우스를 드래그/스크롤하여 구체를 조작하고, 점을 클릭하세요.</p>
+        <p class="text-xs mt-2 text-red-300"></p>
+    </div>
+
+    <!-- Legend Bar (Bottom Right) - 크기 키움 -->
+    <div id="legend-bar" class="absolute bottom-4 right-4 z-10 bg-white/10 backdrop-blur-sm rounded-xl shadow-2xl text-sm max-w-xs transition-all duration-300">
+        <h2 class="font-bold text-lg mb-2 text-cyan-300 border-b border-gray-600 pb-1">[범례] 색상 별 의미 (Zones)</h2>
+        <ul id="legend-list" class="space-y-2 text-gray-200 p-2"></ul>
+    </div>
+
+    <!-- Container for Three.js Canvas -->
+    <div id="canvas-container" class="w-full h-full absolute"></div>
+
+    <!-- Modal for Content Display -->
+    <div id="content-modal" class="fixed inset-0 bg-black bg-opacity-70 backdrop-blur-sm hidden items-center justify-center z-50">
+        <div class="bg-gray-800 p-6 rounded-2xl shadow-3xl max-w-lg w-11/12 m-4 border border-gray-700 transform transition-all duration-300 scale-95 opacity-0" id="modal-content-box">
+            <div class="flex justify-between items-start mb-4 border-b border-gray-700 pb-3">
+                <h2 id="modal-title" class="text-2xl font-extrabold text-yellow-400">가나다라 제목</h2>
+                <button id="close-modal" class="text-gray-400 hover:text-white transition duration-200 p-1 rounded-full hover:bg-gray-700">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                </button>
+            </div>
+            <p id="modal-region" class="text-sm font-medium mb-3 text-cyan-400"></p>
+            <img id="modal-image" class="w-full h-auto rounded-xl object-cover mb-4 border border-gray-600 hidden" alt="Placeholder Image">
+            <p id="modal-text" class="text-gray-200 leading-relaxed whitespace-pre-wrap">가나다라 내용은 사용자가 직접 수정할 수 있습니다.</p>
+            <div class="mt-6 pt-4 border-t border-gray-700 text-xs text-gray-500">
+                <p></p>
+            </div>
+        </div>
+    </div>
+
+    <script type="module">
+        // ---------------------------
+        // 기본 설정 (원본 로직 유지)
+        // ---------------------------
+        let scene, camera, renderer, controls;
+        const container = document.getElementById('canvas-container');
+        const raycaster = new THREE.Raycaster();
+        const mouse = new THREE.Vector2();
+
+        const SPHERE_RADIUS = 10;
+        const MARKER_COUNT_PER_REGION = 4;
+        // PERF: 파티클 수 소폭 감소로 렉 완화
+        const PARTICLE_COUNT = 12; 
+        const MIN_DISTANCE = 3.0;
+
+        // ---------------------------
+        // regions: 처음 5개 영역은 적도(φ) 를 360/5 로 균등 분할
+        // (startPhi/endPhi을 정확히 2π/5 간격으로 설정)
+        // 마지막 항목 "패션 롤모델"은 기존처럼 전체 φ 범위를 가짐
+        // ---------------------------
+        const TWO_PI = Math.PI * 2;
+        const FIVE_SEG = TWO_PI / 5; // 72도 간격 (라디안)
+
+        const regions = [
+            { name: "가치와 철학", color: 0xFF5733, hex: '#FF5733', startPhi: 0 * FIVE_SEG, endPhi: 1 * FIVE_SEG },
+            { name: "성격", color: 0x33FF57, hex: '#33FF57', startPhi: 1 * FIVE_SEG, endPhi: 2 * FIVE_SEG },
+            { name: "문제와 고민", color: 0x3357FF, hex: '#3357FF', startPhi: 2 * FIVE_SEG, endPhi: 3 * FIVE_SEG },
+            { name: "라이프스타일", color: 0xFF33A1, hex: '#FF33A1', startPhi: 3 * FIVE_SEG, endPhi: 4 * FIVE_SEG },
+            { name: "취향", color: 0x33FFF9, hex: '#33FFF9', startPhi: 4 * FIVE_SEG, endPhi: 5 * FIVE_SEG },
+            // 기존의 "패션 롤모델" 항목은 전구(전체 φ)로 유지
+            { name: "패션 롤모델", color: 0xF9FF33, hex: '#F9FF33', startPhi: 0, endPhi: TWO_PI },
+        ];
+
+        const markers = [];
+        const particleSystems = [];
+        // 라벨 스프라이트 관리
+        const labelSprites = [];
+
+        const placeholderContent = {
+            title: "가나다라 제목",
+            text: "가나다라 내용은 사용자가 직접 수정할 수 있습니다.\n\n나의 삶, 성격, 스타일, 라이프스타일을 분석하고, 현재 옷장을 되돌아보며 앞으로의 '나의 옷 입기 계획'을 수립하는 내용으로 채워주세요.",
+            image: "https://placehold.co/400x200/5733FF/FFFFFF?text=사진+placeholder"
+        };
+
+        // ---------------------------
+        // 라벨 생성 함수 (요청사항 2: 라벨 크기 1.5배)
+        // - THREE.Sprite 사용
+        // - 캔버스에 배경 박스(약간 투명), 흰 텍스트
+        // - 텍스트 길이에 맞춰 캔버스 크기 사용
+        // - 각 스프라이트에 baseScale 저장 (나중에 거리 기반 조정)
+        // 변경: 기본 fontSize 및 scaleUnits를 1.5배로 증가시켜 '키워드 박스와 텍스트를 1.5배'로 구현
+        // ---------------------------
+        function createLabelSprite(text, regionHex, options = {}) {
+            // scaling multiplier (1.5배)
+            const LABEL_MULT = 1.5;
+
+            // canvas에 그려 텍스처로 사용
+            const padding = Math.round(8 * LABEL_MULT);
+            const baseFontSize = options.fontSize || 28; // 원래 28
+            const fontSize = Math.round(baseFontSize * LABEL_MULT); // 1.5배 적용
+            const font = `${fontSize}px Inter, Arial`;
+            const tmpCanvas = document.createElement('canvas');
+            const ctx = tmpCanvas.getContext('2d');
+
+            // 임시 폰트 세팅으로 측정
+            ctx.font = font;
+            const metrics = ctx.measureText(text);
+            const textWidth = Math.ceil(metrics.width);
+            const textHeight = fontSize;
+
+            // 캔버스 크기: 텍스트 폭 + 좌우 패딩
+            tmpCanvas.width = textWidth + padding * 2;
+            tmpCanvas.height = textHeight + padding * 2;
+
+            // 다시 context 세팅(캔버스 리사이즈 후 폰트 초기화 필요)
+            ctx.font = font;
+            ctx.textBaseline = 'middle';
+            ctx.textAlign = 'left';
+
+            // 배경 박스: 마커 색상 기반, 투명도 약간 낮게
+            // regionHex이 없으면 반투명 검은색
+            const bg = regionHex ? hexToRgba(regionHex, 0.45) : 'rgba(0,0,0,0.45)';
+            roundRect(ctx, 0, 0, tmpCanvas.width, tmpCanvas.height, 8 * LABEL_MULT, bg);
+
+            // 흰색 텍스트
+            ctx.fillStyle = '#ffffff';
+            ctx.fillText(text, padding, tmpCanvas.height / 2);
+
+            // 캔버스 -> 텍스처
+            const texture = new THREE.CanvasTexture(tmpCanvas);
+            texture.minFilter = THREE.LinearFilter;
+            texture.needsUpdate = true;
+
+            const material = new THREE.SpriteMaterial({ map: texture, transparent: true, depthTest: false });
+            const sprite = new THREE.Sprite(material);
+
+            // 스프라이트의 world-scale 초기값 (텍스트 길이에 따라)
+            // scaleUnits: canvas pixels -> world units factor (증가)
+            const scaleUnits = 0.02 * LABEL_MULT; // 0.02 -> 0.03 (1.5배)
+            const baseScaleX = tmpCanvas.width * scaleUnits;
+            const baseScaleY = tmpCanvas.height * scaleUnits;
+
+            sprite.userData = {
+                baseScale: new THREE.Vector2(baseScaleX, baseScaleY),
+                canvasSize: { w: tmpCanvas.width, h: tmpCanvas.height }
+            };
+
+            sprite.scale.set(baseScaleX, baseScaleY, 1);
+
+            return sprite;
+        }
+
+        // Helper: 둥근 사각형
+        function roundRect(ctx, x, y, w, h, r, fillStyle) {
+            const radius = r;
+            ctx.beginPath();
+            ctx.moveTo(x + radius, y);
+            ctx.arcTo(x + w, y, x + w, y + h, radius);
+            ctx.arcTo(x + w, y + h, x, y + h, radius);
+            ctx.arcTo(x, y + h, x, y, radius);
+            ctx.arcTo(x, y, x + w, y, radius);
+            ctx.closePath();
+            ctx.fillStyle = fillStyle;
+            ctx.fill();
+        }
+
+        // Helper: hex -> rgba string
+        function hexToRgba(hex, alpha = 1.0) {
+            const c = hex.replace('#','');
+            const r = parseInt(c.substring(0,2),16);
+            const g = parseInt(c.substring(2,4),16);
+            const b = parseInt(c.substring(4,6),16);
+            return `rgba(${r},${g},${b},${alpha})`;
+        }
+
+        // ---------------------------
+        // 초기화
+        // ---------------------------
+        function init() {
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x0d1117);
+
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.z = SPHERE_RADIUS * 2.5;
+
+            // Renderer 최적화: pixel ratio 제한으로 렉 완화
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2)); // perf-friendly
+            container.appendChild(renderer.domElement);
+
+            controls = new THREE.OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.05;
+            controls.minDistance = 15;
+            controls.maxDistance = 50;
+            controls.autoRotate = true;
+            controls.autoRotateSpeed = 0.5;
+
+            // Lighting
+            const ambientLight = new THREE.AmbientLight(0xcccccc, 0.5);
+            scene.add(ambientLight);
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 1);
+            directionalLight.position.set(5,5,5);
+            scene.add(directionalLight);
+
+            // Sphere (원본 로직 유지)
+            const sphereGroup = new THREE.Group();
+            const sphereGeometry = new THREE.SphereGeometry(SPHERE_RADIUS, 64, 64);
+            const sphereMaterial = new THREE.MeshLambertMaterial({ color: 0x1f2937, transparent: true, opacity: 0.8 });
+            const mainSphere = new THREE.Mesh(sphereGeometry, sphereMaterial);
+            sphereGroup.add(mainSphere);
+
+            const wireframeGeometry = new THREE.WireframeGeometry(sphereGeometry);
+            const wireframeMaterial = new THREE.LineBasicMaterial({ color: 0xffffff, linewidth: 1, transparent: true, opacity: 0.3 });
+            const wireframe = new THREE.LineSegments(wireframeGeometry, wireframeMaterial);
+            sphereGroup.add(wireframe);
+
+            scene.add(sphereGroup);
+
+            // Markers 생성 (원본 로직 유지하되 라벨 추가)
+            regions.forEach((region, regionIndex) => {
+                const markerColor = new THREE.Color(region.color);
+                const currentPositions = [];
+
+                // 위도/경도 범위 설정
+                // 변경: 처음 5개 지역(인덱스 0~4)은 적도 밴드를 사용
+                let effectivePhiMin = region.startPhi;
+                let effectivePhiMax = region.endPhi;
+                let thetaMin, thetaMax;
+                if (region.name === "패션 롤모델") {
+                    effectivePhiMin = region.startPhi;
+                    effectivePhiMax = region.endPhi;
+                    thetaMin = 0.05;
+                    thetaMax = Math.PI / 4;
+                } else {
+                    // 적도 근처로 좁게 설정 (균일한 적도 분할)
+                    const center = Math.PI / 2;
+                    const spread = Math.PI * 30 / 180; // 약 ±15° (좁은 밴드)
+                    thetaMin = center - spread / 2;
+                    thetaMax = center + spread / 2;
+                }
+                const effectivePhiRange = effectivePhiMax - effectivePhiMin;
+                const effectiveThetaRange = thetaMax - thetaMin;
+
+                for (let i = 0; i < MARKER_COUNT_PER_REGION; i++) {
+                    let x, y, z;
+                    let foundPosition = false;
+                    let attempts = 0;
+                    while (!foundPosition && attempts < 100) {
+                        const phi = effectivePhiMin + Math.random()*effectivePhiRange;
+                        const theta = thetaMin + Math.random()*effectiveThetaRange;
+                        x = SPHERE_RADIUS * Math.sin(theta) * Math.sin(phi);
+                        y = SPHERE_RADIUS * Math.cos(theta);
+                        z = SPHERE_RADIUS * Math.sin(theta) * Math.cos(phi);
+
+                        let tooClose = false;
+                        for (const pos of currentPositions) {
+                            const dist = new THREE.Vector3(x,y,z).distanceTo(pos);
+                            if (dist < MIN_DISTANCE) { tooClose = true; break; }
+                        }
+                        if (!tooClose) {
+                            foundPosition = true;
+                            currentPositions.push(new THREE.Vector3(x,y,z));
+                        }
+                        attempts++;
+                    }
+
+                    const markerGeometry = new THREE.SphereGeometry(0.4, 16, 16);
+                    const markerMaterial = new THREE.MeshPhongMaterial({ color: markerColor, emissive: markerColor, emissiveIntensity: 0.8 });
+                    const marker = new THREE.Mesh(markerGeometry, markerMaterial);
+                    marker.position.set(x,y,z);
+
+                    // ------------------------
+                    // 사용자 커스텀 콘텐츠 (원본 그대로 유지)
+                    // ------------------------
+                    let customContent = {
+                        title: `가나다라 제목 #${i + 1} (${region.name})`,
+                        text: placeholderContent.text,
+                        image: `https://placehold.co/400x200/${region.hex.substring(1)}/FFFFFF?text=${region.name}`
+                    };
+
+                    // (원본에서 제공한 모든 분기 내용 그대로 복사)
+                    if (region.name === "가치와 철학" && i === 0) {
+                        customContent.title = "내구성";
+                        customContent.text = "한 번 구매하고나서 오랜 기간 착용할 수 있는 상품을 선호합니다. \n이는 금전적인 절약과, 환경에 모두 긍정적인 영향을 준다고 생각하기 때문입니다.\n실제로 한때 내구성 좋은 신발 브랜드를 찾아 다양한 브랜드의 신발을 구매했었는데, '오니츠카 타이거' 신발의 제품을 2018년에 구매하여 7년째 망가짐 없이 착용중으로 엄청난 만족감을 느끼고 있습니다.";
+                        customContent.image = "";
+                    } 
+                    else if (region.name === "가치와 철학" && i === 1) {
+                        customContent.title = "추억";
+                        customContent.text = "나 자신, 또는 타인과의 추억이 담겨있는 옷을 입고다니거나 모으고 선물하는 것을 좋아합니다.\n사진이나 다른 자료들과는 달리 직접 착용함으로써 그때 그 시절의 나 자신이 된거같은 기분을 느끼기 때문에 엄청난 가치라고 생각합니다. \n실제로 23년 겨울, 런던 여행중 우연히 손흥민 선수를 만나 입고있던 옷에 사인을 받은 적이 있는데 이옷을 아직까지도 입고다니며 그때의 나로 돌아가곤 합니다.";
+                        customContent.image = "https://raw.githubusercontent.com/InmoYang-47/fashion/refs/heads/main/KakaoTalk_20251124_214115604_01.jpg";
+                    } 
+                    else if (region.name === "가치와 철학" && i === 2) {
+                        customContent.title = "합리적인 가격";
+                        customContent.text = "저렴해서 좋고, 비싸서 안좋고가 아닌 '상품이 제 값을 하는지'에 초점을 맞춥니다. \n가령 학생에게는 비싼 100만원이 넘는 옷도 나 자신에게 그 정도 값을 한다고 생각하면 훌륭한 옷이라고 생각합니다. \n실제로 군 복무를 마치고 저축해둔 월급으로 백화점에서 버버리 셔츠를 구매한 적이 있는데, 당연히 학생 신분에선 가격대가 높은 제품이고 남들이 좋지 않게 볼 수 있지만 나 자신을 표현하는데에 합리적인 가격이라고 생각이 들었기에 전혀 후회하지 않고 지금까지도 만족감을 느낍니다. ";
+                        customContent.image = "https://raw.githubusercontent.com/InmoYang-47/fashion/refs/heads/main/KakaoTalk_20251124_130913835_01.jpg";
+                    } 
+                    else if (region.name === "가치와 철학" && i === 3) {
+                        customContent.title = "진정성";
+                        customContent.text = "유행이나 SNS를 통해 충동적으로 구매하는것이 아닌 나 자신에게 정말로 필요한 것인지 옷을 구매할때마다 자주 장고를 합니다.\n이는 보수적인 성격이 옷에 대한 가치와 철학에도 영향을 미치고, 결국 소비 방식까지 확장된 나만의 가치입니다.";
+                        customContent.image = ""; 
+                    } 
+                    
+                    // 성격
+                    else if (region.name === "성격" && i === 0) {
+                        customContent.title = "남들의 시선에 구애받지 않는다.";
+                        customContent.text = "TPO가 중요하게 요구되지 않는 한 남들의 시선이나 유행을 신경쓰지않고, 원하는 옷을 입는 것에 즐거움을 느낍니다.\n옷이 오염되거나 손상되어도 일상생활에 막대한 문제가 없다면 버리지 않습니다. \n이러한 성격이 계속 유지되어서 요즘은 오히려 유행에서 벗어난 옷을 입고자 하려는 강박도 가끔 느껴지곤 합니다.";
+                        customContent.image = "";
+                    }
+                    else if (region.name === "성격" && i === 1) {
+                        customContent.title = "ISTJ";
+                        customContent.text = "내향적인 면이 강해 차분하고 단정한 스타일의 옷을 선호하며, 타인과 같이 옷을 사는것보다 스스로 옷을 구매하는 편입니다. \n또한 체계적인 면 때문에 옷 한벌을 살때도 가격이나 실용성 등 많은 측면에서 고민하기에 많은 시간을 소비합니다.";
+                        customContent.image = "";
+                    }
+                    else if (region.name === "성격" && i === 2) {
+                        customContent.title = "보수적인 사람";
+                        customContent.text = "패션에 있어서 새로운 도전을 하는 것을 쉽게 생각하지 않습니다.\n예를 들어 와이드 팬츠가 유행할 때 오랜 기간 구매를 망설이고 슬림핏 팬츠를 고집했습니다.\n이는 어릴때부터 다양한 옷을 입기보다는 입던것만 입거나, 아직까지 나 자신을 꾸미고 가꾸는 것에 대한 중요성을 확실하게 느끼지 못해서라고 생각합니다.\n앞으로는 다양한 경험을 하고 여러 환경속에 속해보면서 패션에 있어 새로운 도전을 꺼리지 않는 사람이 되고싶습니다. ";
+                        customContent.image = "";
+                    }
+                    else if (region.name === "성격" && i === 3) {
+                        customContent.title = "집요함";
+                        customContent.text = "집요한 면이 있어 특정 상품에 빠지면 그 상품의 브랜드나 그 상품만을 고수하곤 합니다.\n이러한 성격은 소비습관에도 큰 영향을 미칩니다.\n한 때, 구하기 힘든 선글라스를 구매하고자 엄청난 시간을 들였지만 결국 구매하지 못했던 기억이 있습니다.";
+                        customContent.image = "";
+                    }
+
+                    // 문제와 고민
+                    else if (region.name === "문제와 고민" && i === 0) {
+                        customContent.title = "추위를 많이 탄다. 🥶";
+                        customContent.text = "보통 사람들에 비해 상대적으로 추위를 많이 타기때문에 여름 옷보다 겨울 옷이 훨씬 많아 옷장의 부피를 쉽게 차지하며, 외출 시 겉옷을 가지고 다니는 경우가 빈번합니다. \n또한 얇은 옷을 많이 입거나 두꺼운 옷을 입어 추위를 막기때문에 평상시보다 뚱뚱해보이거나 둔해보이는 경우가 자주 발생하여 미학과 실용적 측면 사이에서 균형점을 찾는것이 항상 고민거리로 작용합니다.\n또한 예전과는 달리 예측하기 어려운 겨울 날씨로 인해 온도에 맞는 방한 의류를 쉽게 꺼내 입을 수 있도록 정리하는것도 중요하다고 생각합니다. ";
+                        customContent.image = "";
+                    }
+                    else if (region.name === "문제와 고민" && i === 1) {
+                        customContent.title = "처분 기준 확립의 어려움. 👔";
+                        customContent.text = "필요 없는 옷을 처분함으로써 옷장의 부피를 확보해야하는데, 추억이 담긴 옷을 가치있게 여기는 탓에 사이즈가 맞지 않지만 처분하지 못한 옷들이 존재하고 \n다른 이유로는 나에게 어떤 옷이 잘 어울리는지에 대한 빠른 판단이 쉽게 서지 않아 처분하지 못한 옷들이 많습니다.  ";
+                        customContent.image = "";
+                    }
+                    else if (region.name === "문제와 고민" && i === 2) {
+                        customContent.title = "작은 체형";
+                        customContent.text = "172cm의 신장으로 평균 대비 작은 체형을 지니고 있어서 남들의 시선을 신경쓰지 않는다고 한들, 옷을 구매할 때 비율에 대한 부분을 무시할 수 없습니다.\n이 요소는 나만의 스타일을 확립하는데에 있어 주관적 가치관과 객관적인 신체 조건 사이의 균형점을 찾음으로서 해결할 수 있으므로 가장 깊은 고민 포인트 입니다.";
+                        customContent.image = "";
+                    }
+                    else if (region.name === "문제와 고민" && i === 3) {
+                        customContent.title = "수많은 악세서리, 하지만 활용은...";
+                        customContent.text = "시계, 키링, 선글라스와 같은 악세서리를 선물받았던 경우가 많아 다양하게 가지고 있지만, 악세사리를 착용해본 경험이 부족하여 악세사리를 활용하여 나 자신을 표현하는 방법에 대한 고민이 있습니다. ";
+                        customContent.image = "";
+                    }
+
+                    // 라이프스타일
+                    else if (region.name === "라이프스타일" && i === 0) {
+                        customContent.title = "축구 러버 ⚽";
+                        customContent.text = "조기 축구 팀 회원으로 활동할 정도로 축구를 좋아하는만큼 팀 유니폼을 비롯한 축구 관련 의류들이 많고, 경기를 하거나 보러갈 때 착용합니다.\n한 때는 서포트 하는 팀이나 선수의 유니폼을 시즌별로 수집 했을정도로 콜렉팅에도 관심이 많았지만 유니폼 가격에 대한 인플레이션으로 현실적인 경제적 상황을 고려하여 중단한 상태입니다.";
+                        customContent.image = "https://raw.githubusercontent.com/InmoYang-47/fashion/refs/heads/main/KakaoTalk_20251124_123734486.jpg";
+                    }
+                    else if (region.name === "라이프스타일" && i === 1) {
+                        customContent.title = "전자공학도 ⚡";
+                        customContent.text = "전공 특성상 오래 앉아있는 경우가 많아 신축성이 좋고, 편한 착용감의 하의와 신발을 선호합니다.\n실제로 한달 동안 청바지나 면바지를 입는 횟수는 손에 꼽을 정도로 적습니다.\n또한 운동화 대신 발이 편한 슬리퍼나 크로스 제품을 애용합니다.\n이는 다른 불편한 요소에 신경을 쓰지 않고 주어진 과업을 최대한 빨리 끝내려고하는 마음가짐에서 비롯되었습니다.";
+                        customContent.image = "https://raw.githubusercontent.com/InmoYang-47/fashion/refs/heads/main/KakaoTalk_20251124_215217318.jpg";
+                    }
+                    else if (region.name === "라이프스타일" && i === 2) {
+                        customContent.title = "데이트 😽";
+                        customContent.text = "한달에 3~4회 정도 이성친구와 데이트를 하는데, 편한 옷 보다는 장소나 상황에 적합한 옷을 착용하려고 노력합니다.\n또한 이때 만큼은 내가 원하는 옷을 입는것이 아닌, 이성친구도 만족할 수 있는 옷을 착용하는 융통성을 발휘하는 것이 중요하다고 생각합니다.\n이 때문인지 데이트 하는 순간 만큼은 새로운 패션에 눈을 뜨게 된 새로운 나를 발견할 수 있습니다.";
+                        customContent.image = "https://raw.githubusercontent.com/InmoYang-47/fashion/refs/heads/main/KakaoTalk_20251124_214708207.jpg";
+                    }
+                    else if (region.name === "라이프스타일" && i === 3) {
+                        customContent.title = "엄청난 아침잠의 소유자. 🥱";
+                        customContent.text = "아침잠이 상대적으로 많은 편이기 때문에 입고나갈 옷을 고를 시간이 항상 부족하기때문에 전날 밤에 다음날 입고나갈 옷을 준비해두거나, 고민 없이 빠르게 입을 수 있는 무난한 옷을 선호합니다.(ex:트레이닝 셋, 맨투맨 등)";
+                        customContent.image = "";
+                    }
+
+                    // 취향
+                    else if (region.name === "취향" && i === 0) {
+                        customContent.title = "디자인: 극과 극";
+                        customContent.text = "옷을 고르는데 다른 요소를 제외하고 오로지 디자인으로만 봤을 때, 아예 확 튀거나 아예 차분하고 단정한 디자인의 옷을 선호합니다.\n이는 평상시에 차분하고 단정한 옷을 입는 경우가 압도적으로 많기 때문에 자주 접하지 못했던 화려한 디자인에 대한 욕구가 생기는 것에서 비롯되었다고 생각합니다.";
+                        customContent.image = "";
+                    }
+                    else if (region.name === "취향" && i === 1) {
+                        customContent.title = "최애 캐릭터: 포켓몬스터";
+                        customContent.text = "옷에 있어 중요하게 여기는 가치 중 하나인 추억을 자극하는 포켓몬스터가 디자인된 옷을 입으면 마치 그 시절로 돌아간듯한 느낌을 받는것 같아 포켓몬스터가 그려진 옷을 구매하거나 입곤 합니다.";
+                        customContent.image = "https://raw.githubusercontent.com/InmoYang-47/fashion/refs/heads/main/KakaoTalk_20251124_130913835_03.jpg";
+                    }
+                    else if (region.name === "취향" && i === 2) {
+                        customContent.title = "색상: 어두운 톤";
+                        customContent.text = "어두운 톤을 입었을 때 나도 모르게 차분해지는 것 같고, 덕분에 집중력이 향상되는 효과까지 얻을 수 있어 옷의 색상을 통해 실제 삶에서의 능력에 긍정적인 영향을 미친다고 생각하여 어두운 톤의 옷을 선호하게 되었습니다.";
+                        customContent.image = "";
+                    }
+                    else if (region.name === "취향" && i === 3) {
+                        customContent.title = "브랜드: 버버리";
+                        customContent.text = "차분해 보이지만 버버리만의 패턴으로 독창성 또한 표현할 수 있는 옷들을 통해, 극과 극이라는 나의 취향을 동시에 표현할 수 있기에 적합하다고 생각하여 버버리라는 브랜드를 선호하게 되었습니다.";
+                        customContent.image = "";
+                    }
+
+                    // 패션 롤모델
+                    else if (region.name === "패션 롤모델" && i === 0) {
+                        customContent.title = "지드래곤";
+                        customContent.text = "(한때 '계란말이 초밥 머리'로 불린 지드래곤의 과감한 헤어스타일.)\n말이 필요 없는, 수많은 남성들의 패션 리더인 지드래곤은 단순히 유행을 따르지 않고 스스로 유행을 만들어내는 아이콘입니다. \n특히, 그는 헤어스타일 등 모든 스타일에 있어 항상 과감하게 도전하는 모습을 보여줍니다. 새로운 시도를 망설이는 저에게, 지드래곤은 제게 용기를 주는 롤모델 입니다.";
+                        customContent.image = "https://raw.githubusercontent.com/InmoYang-47/fashion/033bf4a5bc8e4f3ab14c6822c8eec969787badf7/%EC%8A%A4%ED%81%AC%EB%A6%B0%EC%83%B7%202025-11-24%20152002.png";
+                    }
+                    else if (region.name === "패션 롤모델" && i === 1) {
+                        customContent.title = "조승우";
+                        customContent.text = "배우 조승우는 그 누구보다도 본인만의 스타일이 확고한 사람이라고 생각합니다. \n어린 시절부터 봐온 그의 수많은 사복 차림과 코디네이션을 볼 때마다, '나이에 맞다'거나 '상황에 적합하다'는 일반적인 평가를 넘어 '그냥 조승우 그 자체다' 라는 느낌을 받았습니다. \n그는 자신의 핏과 개성에 맞는 옷을 정확하게 선택하고 구현하는 탁월한 안목을 지니고 있습니다. 이처럼 흔들림 없는 스타일 확립성과 깊은 안목을 배우고 싶기에, 조승우 배우는 저의 훌륭한 롤모델입니다.";
+                        customContent.image = "https://raw.githubusercontent.com/InmoYang-47/fashion/refs/heads/main/KakaoTalk_20251124_190352279.jpg";
+                    }
+                    else if (region.name === "패션 롤모델" && i === 2) {
+                        customContent.title = "도경수";
+                        customContent.text = "(좌-도경수, 우-카이(그룹 내 장신 멤버)) \nEXO 멤버 도경수는 큰 신장은 아니지만, 사복 패션에 대해 늘 긍정적인 평가를 받는 스타입니다. 특히, 제가 선호하는 단정하고 깔끔한 스타일의 옷을 작은 신장에도 불구하고 훌륭하게 소화해냅니다. 그룹 내 다른 장신 멤버들과 함께 있을 때도 전혀 가려지거나 묻히지 않는다는 점에서, 제게 훌륭한 패션 롤모델입니다.";
+                        customContent.image = "https://raw.githubusercontent.com/InmoYang-47/fashion/refs/heads/main/%EC%8A%A4%ED%81%AC%EB%A6%B0%EC%83%B7%202025-11-24%20152641.png";
+                    }
+                    else if (region.name === "패션 롤모델" && i === 3) {
+                        customContent.title = "크리스티아누 호날두";
+                        customContent.text = "축구선수 크리스티아누 호날두는 때때로 '패션 테러리스트'로 불리기도 합니다. 이는 불우했던 어린 시절의 콤플렉스를 극복하기 위해 명품으로 자신을 치장하는 것에서 비롯되었다는 분석이 많습니다. \n검소함을 긍정적으로 평가하는 대중의 비난에도 불구하고, 호날두는 언제나 자신만의 철학과 마인드를 바탕으로 옷을 입는 강한 자신감을 보여줍니다. 이러한 자신감과 태도 때문에 제게 패션에 대한 마음가짐, 인생에 있어서도 가르침을 주는 롤모델입니다. ";
+                        customContent.image = "https://raw.githubusercontent.com/InmoYang-47/fashion/refs/heads/main/%EC%8A%A4%ED%81%AC%EB%A6%B0%EC%83%B7%202025-11-24%20150200.png";
+                    }
+
+                    // data 연결
+                    marker.userData = {
+                        isMarker: true,
+                        regionName: region.name,
+                        index: i + 1,
+                        content: customContent
+                    };
+
+                    sphereGroup.add(marker);
+                    markers.push(marker);
+
+                    // Ring (원본 유지)
+                    const ringGeometry = new THREE.RingGeometry(0.5, 0.6, 32);
+                    const ringMaterial = new THREE.MeshBasicMaterial({ color: markerColor, side: THREE.DoubleSide, transparent: true, opacity: 0.6 });
+                    const ring = new THREE.Mesh(ringGeometry, ringMaterial);
+                    ring.lookAt(marker.position.clone().multiplyScalar(2));
+                    ring.position.copy(marker.position);
+                    sphereGroup.add(ring);
+
+                    // Particle system (원본 유지, 퍼포먼스 소폭 개선으로 PARTICLE_COUNT 낮춤)
+                    const particleGeometry = new THREE.BufferGeometry();
+                    const positions = [];
+                    const colors = [];
+                    const particleColor = new THREE.Color(markerColor);
+                    for (let p = 0; p < PARTICLE_COUNT; p++) {
+                        const px = x + (Math.random() - 0.5) * 1.0;
+                        const py = y + (Math.random() - 0.5) * 1.0;
+                        const pz = z + (Math.random() - 0.5) * 1.0;
+                        positions.push(px, py, pz);
+                        colors.push(particleColor.r, particleColor.g, particleColor.b);
+                    }
+                    particleGeometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+                    particleGeometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+                    const particleMaterial = new THREE.PointsMaterial({
+                        size: 0.15,
+                        vertexColors: true,
+                        transparent: true,
+                        opacity: 0.8,
+                        blending: THREE.AdditiveBlending
+                    });
+                    const particleSystem = new THREE.Points(particleGeometry, particleMaterial);
+                    sphereGroup.add(particleSystem);
+                    particleSystems.push(particleSystem);
+
+                    // ------------------------
+                    // 라벨 생성 및 배치 (요청사항 2)
+                    // - 마커 바로 위(normal direction으로 약간 떨어뜨려 배치)
+                    // - 스프라이트는 항상 카메라를 향함(THREE.Sprite 기본)
+                    // ------------------------
+                    // 라벨 텍스트로 'title' 또는 주요 키워드 사용
+                    const labelText = customContent.title || region.name;
+                    const labelSprite = createLabelSprite(labelText, region.hex);
+                    // 약간 바깥쪽으로 띄우기 (마커에서 1.12배)
+                    const labelPos = marker.position.clone().multiplyScalar(1.12);
+                    labelSprite.position.copy(labelPos);
+                    // depthTest 끄면 항상 앞에 보이므로 depthTest=false로 두면 가독성 향상하지만, 원치 않으면 true로 바꿀 수 있음
+                    labelSprite.material.depthTest = false;
+                    scene.add(labelSprite);
+                    labelSprites.push(labelSprite);
+                }
+            });
+
+            scene.add(sphereGroup);
+
+            // 범례 생성 (원본 유지하되 사이즈는 CSS로 키움)
+            const legendList = document.getElementById('legend-list');
+            regions.forEach(region => {
+                const listItem = document.createElement('li');
+                listItem.className = 'flex items-center';
+                listItem.innerHTML = `
+                    <span class="color-dot" style="background-color: ${region.hex};"></span>
+                    <span class="font-medium">${region.name}</span>
+                `;
+                legendList.appendChild(listItem);
+            });
+
+            // 이벤트 리스너
+            window.addEventListener('resize', onWindowResize, false);
+            renderer.domElement.addEventListener('click', onClick, false);
+
+            animate();
+        }
+
+        // ---------------------------
+        // 애니메이션 루프: 라벨 크기 조정(거리 보정) 및 렌더
+        // ---------------------------
+        function animate() {
+            requestAnimationFrame(animate);
+            controls.update();
+
+            // PERF: 라벨 스케일은 카메라와의 거리로 보정하여 언제나 읽기 쉬운 크기로 유지
+            // 전체적으로 비슷한 가독성을 주도록 설정.
+            const cameraPos = camera.position;
+            for (let s of labelSprites) {
+                const dist = cameraPos.distanceTo(s.position);
+                // baseScale를 가져와 거리에 따른 보정
+                const base = s.userData.baseScale;
+                // 이 값들은 튜닝 가능: 너무 크면 줄이고, 작으면 늘리기
+                const distanceFactor = dist / 30; // camera 거리가 멀수록 라벨 키움
+                const scaleX = base.x * distanceFactor;
+                const scaleY = base.y * distanceFactor;
+                // 최소/최대 clamp로 과도한 스케일 방지
+                const min = 0.4;
+                const max = 6.0;
+                s.scale.set(
+                    Math.max(min, Math.min(max, scaleX)),
+                    Math.max(min, Math.min(max, scaleY)),
+                    1
+                );
+                // 항상 카메라를 바라보는 건 Sprite가 자동으로 해줌
+            }
+
+            renderer.render(scene, camera);
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        // ---------------------------
+        // 클릭 이벤트(원본 유지)
+        // ---------------------------
+        function onClick(event) {
+            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = - (event.clientY / window.innerHeight) * 2 + 1;
+
+            raycaster.setFromCamera(mouse, camera);
+            const intersects = raycaster.intersectObjects(markers);
+
+            if (intersects.length > 0) {
+                const marker = intersects[0].object;
+                if (marker.userData.isMarker) {
+                    showModal(marker.userData);
+                }
+            }
+        }
+
+        // ---------------------------
+        // 모달 표시 로직 (원본 유지)
+        // ---------------------------
+        const modal = document.getElementById('content-modal');
+        const modalContentBox = document.getElementById('modal-content-box');
+        const modalTitle = document.getElementById('modal-title');
+        const modalRegion = document.getElementById('modal-region');
+        const modalText = document.getElementById('modal-text');
+        const modalImage = document.getElementById('modal-image');
+        const closeModalButton = document.getElementById('close-modal');
+
+        function showModal(data) {
+            modalTitle.textContent = data.content.title;
+            modalRegion.textContent = '';
+            modalText.textContent = data.content.text || '';
+            if (data.content.image) {
+                modalImage.src = data.content.image;
+                modalImage.alt = `${data.regionName} 관련 이미지`;
+                modalImage.classList.remove('hidden');
+            } else {
+                modalImage.src = '';
+                modalImage.classList.add('hidden');
+            }
+            modal.classList.remove('hidden');
+            modal.classList.add('flex');
+            setTimeout(() => {
+                modalContentBox.classList.remove('scale-95', 'opacity-0');
+                modalContentBox.classList.add('scale-100', 'opacity-100');
+            }, 10);
+        }
+
+        function hideModal() {
+            modalContentBox.classList.remove('scale-100', 'opacity-100');
+            modalContentBox.classList.add('scale-95', 'opacity-0');
+            setTimeout(() => {
+                modal.classList.remove('flex');
+                modal.classList.add('hidden');
+            }, 300);
+        }
+
+        closeModalButton.addEventListener('click', hideModal);
+        modal.addEventListener('click', (e) => {
+            if (e.target === modal) hideModal();
+        });
+
+        // ---------------------------
+        // 유틸: 캔버스 텍스처 업데이트(이미 사용됨)
+        // ---------------------------
+        // 페이지 로드 후 초기화
+        window.onload = init;
+    </script>
+</body>
+</html>
